@@ -1,0 +1,60 @@
+FROM debian:bookworm AS curl-builder
+
+ARG CURL_VERSION=8.12.0
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    ca-certificates \
+    libssl-dev \
+    zlib1g-dev \
+    wget \
+    pkg-config \
+    libzstd-dev \
+    libnghttp2-dev \
+    libidn2-0-dev \
+    libssh2-1-dev \
+    libpsl-dev \
+    libbrotli-dev && \
+    wget https://curl.se/download/curl-${CURL_VERSION}.tar.gz && \
+    tar -xzf curl-${CURL_VERSION}.tar.gz && \
+    cd curl-${CURL_VERSION} && \
+    ./configure --with-ssl && \
+    make -j"$(nproc)" && \
+    make install && \
+    strip /usr/local/bin/curl
+
+# -------- Stage 2: Build SonarQube --------
+FROM eclipse-temurin:17-jdk AS sonarqube-builder
+
+ENV SONARQUBE_VERSION=10.4.1.88267
+ENV SONARQUBE_ZIP=sonarqube-${SONARQUBE_VERSION}.zip
+
+# Create user with UID 900
+RUN groupadd -g 900 sonarqube && useradd -u 900 -g 900 -r -s /bin/false sonarqube
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y wget unzip && \
+    wget https://binaries.sonarsource.com/Distribution/sonarqube/${SONARQUBE_ZIP} && \
+    unzip ${SONARQUBE_ZIP} && \
+    mv sonarqube-${SONARQUBE_VERSION} sonarqube && \
+    rm ${SONARQUBE_ZIP} && \
+    chown -R 900:900 sonarqube
+
+# -------- Stage 3: Runtime image --------
+FROM gcr.io/distroless/java17-debian12
+
+ENV SONARQUBE_HOME=/opt/sonarqube
+ENV ES_JAVA_OPTS="-Xms1g -Xmx1g"
+
+# Use non-root user ID 900
+USER 900:900
+
+# Copy files
+COPY --from=sonarqube-builder /app/sonarqube ${SONARQUBE_HOME}
+COPY --from=curl-builder /usr/local/bin/curl /usr/local/bin/curl
+
+WORKDIR ${SONARQUBE_HOME}
+EXPOSE 9000
+
+ENTRYPOINT ["java", "-jar", "/opt/sonarqube/lib/sonar-application-10.4.1.88267.jar"]

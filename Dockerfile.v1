@@ -1,0 +1,99 @@
+FROM ubuntu:24.10
+
+# Set environment variables to avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive \
+    SONARQUBE_HOME=/opt/sonarqube \
+    SONARQUBE_VERSION=25.4.0.105899 \
+    SONARQUBE_JDBC_USERNAME=sonar \
+    SONARQUBE_JDBC_PASSWORD=sonar \
+    SONARQUBE_JDBC_URL=""
+
+# Install required dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        openjdk-17-jdk \
+        wget \
+        unzip \
+        gnupg2 \
+        python3 \
+        python3-pip \
+        python3-venv \
+        && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install build dependencies for curl
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        autoconf \
+        automake \
+        libtool \
+        libssl-dev \
+        zlib1g-dev \
+        libnghttp2-dev \
+        libpsl-dev \
+        libssh2-1-dev \
+        && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Download and install curl 8.12.0 from source
+RUN cd /tmp && \
+    wget https://curl.se/download/curl-8.12.0.tar.gz && \
+    tar -xzf curl-8.12.0.tar.gz && \
+    cd curl-8.12.0 && \
+    ./configure \
+        --prefix=/usr/local \
+        --with-ssl \
+        --with-zlib \
+        --with-nghttp2 \
+        --with-libssh2 \
+        --enable-ipv6 \
+        --enable-versioned-symbols \
+        --enable-threaded-resolver \
+        --with-openssl \
+        --with-ca-path=/etc/ssl/certs && \
+    make -j$(nproc) && \
+    make install && \
+    ldconfig && \
+    rm -rf /tmp/curl-8.12.0* && \
+    # Verify installation
+    /usr/local/bin/curl --version
+
+# Create sonarqube user and directories with UID/GID 999
+RUN groupadd -g 999 sonarqube && \
+    useradd -u 999 -g sonarqube -d ${SONARQUBE_HOME} sonarqube && \
+    mkdir -p ${SONARQUBE_HOME} && \
+    chown -R sonarqube:sonarqube ${SONARQUBE_HOME}
+
+# Download and install SonarQube
+RUN cd /tmp && \
+    wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-${SONARQUBE_VERSION}.zip && \
+    unzip sonarqube-${SONARQUBE_VERSION}.zip && \
+    mv sonarqube-${SONARQUBE_VERSION}/* ${SONARQUBE_HOME}/ && \
+    rm -rf sonarqube-${SONARQUBE_VERSION}* && \
+    chown -R sonarqube:sonarqube ${SONARQUBE_HOME} && \
+    chmod -R 775 ${SONARQUBE_HOME}
+
+# Configure system limits (required for Elasticsearch)
+RUN echo "sonarqube - nofile 65536" >> /etc/security/limits.conf && \
+    echo "sonarqube - nproc 4096" >> /etc/security/limits.conf
+
+# Configure entrypoint
+COPY entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Switch to sonarqube user
+USER sonarqube
+
+# Expose SonarQube port
+EXPOSE 9000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=300s --retries=3 \
+    CMD curl -f http://localhost:9000/api/system/status || exit 1
+
+# Entrypoint
+ENTRYPOINT ["entrypoint.sh"]
+CMD ["sonar"]

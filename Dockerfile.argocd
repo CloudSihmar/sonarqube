@@ -1,0 +1,25 @@
+# ---------------------------------------------------------
+# Stage 1: Download and extract Argo CD source
+# ---------------------------------------------------------
+FROM alpine:3.18 AS downloader
+
+RUN apk add --no-cache ca-certificates wget tar && \
+    wget -qO /tmp/argocd.tar.gz \
+      https://github.com/argoproj/argo-cd/archive/refs/tags/v3.0.0-rc4.tar.gz && \
+    mkdir -p /out && \
+    tar -xzf /tmp/argocd.tar.gz -C /out
+
+# ---------------------------------------------------------
+# Stage 2: Distroless runtime
+# ---------------------------------------------------------
+FROM gcr.io/distroless/static:nonroot
+
+# Copy binaries from exact locations (hardcoded paths)
+COPY --from=downloader /out/argo-cd-3.0.0-rc4/cmd/argocd /usr/local/bin/argocd
+COPY --from=downloader /out/argo-cd-3.0.0-rc4/cmd/argocd-server /usr/local/bin/argocd-server
+COPY --from=downloader /out/argo-cd-3.0.0-rc4/cmd/argocd-repo-server /usr/local/bin/argocd-repo-server
+COPY --from=downloader /out/argo-cd-3.0.0-rc4/cmd/argocd-application-controller /usr/local/bin/argocd-application-controller
+
+EXPOSE 8080 8081
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/argocd-server"]

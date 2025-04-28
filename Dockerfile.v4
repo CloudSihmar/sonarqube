@@ -1,0 +1,41 @@
+# -------- Stage 1: Prepare SonarQube --------
+FROM openjdk:23-jdk-slim-bookworm AS sonarqube-builder
+
+# Use latest SonarQube version
+ENV SONARQUBE_VERSION=25.4.0.105899
+ENV SONARQUBE_ZIP=sonarqube-${SONARQUBE_VERSION}.zip
+
+# Create non-root user (UID 900)
+RUN groupadd -g 900 sonarqube && \
+    useradd -u 900 -g 900 -r -s /bin/false sonarqube
+
+WORKDIR /app
+
+# Update system packages and install dependencies (use apt, not microdnf!)
+RUN apt-get update && \
+    apt-get install -y wget unzip && \
+    rm -rf /var/lib/apt/lists/* && \
+    wget https://binaries.sonarsource.com/Distribution/sonarqube/${SONARQUBE_ZIP} && \
+    unzip ${SONARQUBE_ZIP} && \
+    mv sonarqube-${SONARQUBE_VERSION} sonarqube && \
+    rm ${SONARQUBE_ZIP} && \
+    chown -R 900:900 sonarqube
+
+# -------- Stage 2: Final image --------
+FROM openjdk:23-jdk-slim-bookworm
+
+ENV SONARQUBE_HOME=/opt/sonarqube
+ENV ES_JAVA_OPTS="-Xms1g -Xmx1g"
+
+# Create non-root user (must match first stage)
+RUN groupadd -g 900 sonarqube && \
+    useradd -u 900 -g 900 -r -s /bin/false sonarqube
+
+COPY --from=sonarqube-builder /app/sonarqube ${SONARQUBE_HOME}
+
+WORKDIR ${SONARQUBE_HOME}
+EXPOSE 9000
+
+USER 900:900
+
+ENTRYPOINT ["java", "-jar", "/opt/sonarqube/lib/sonar-application-25.4.0.105899.jar"]

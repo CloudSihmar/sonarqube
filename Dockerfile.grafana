@@ -1,0 +1,62 @@
+# ---------------------------------------------------------
+# Stage 1: Builder — download & unpack Grafana 11.6.0
+# ---------------------------------------------------------
+FROM debian:bookworm-slim AS builder
+
+ARG GRAFANA_VERSION=11.6.0
+ENV GRAFANA_URL=https://dl.grafana.com/oss/release/grafana-${GRAFANA_VERSION}.linux-amd64.tar.gz
+
+# Install only the tools needed to fetch & unpack
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      wget \
+      ca-certificates \
+      tar \
+      adduser \
+ && rm -rf /var/lib/apt/lists/*
+
+# Create grafana user (UID/GID 472 matches the official image)
+RUN groupadd -g 472 grafana \
+ && useradd -u 472 -g 472 -M -r -s /usr/sbin/nologin grafana
+
+# Pre-create all directories and set ownership
+RUN mkdir -p \
+      /opt/grafana \
+      /opt/grafana/data \
+      /opt/grafana/data/log \
+      /opt/grafana/data/plugins \
+      /opt/grafana/conf/provisioning \
+      /var/lib/grafana \
+      /var/log/grafana \
+ && chown -R grafana:grafana \
+      /opt/grafana \
+      /var/lib/grafana \
+      /var/log/grafana
+
+WORKDIR /opt/grafana
+
+# Download & extract Grafana; strip top-level folder
+RUN wget -qO grafana.tar.gz ${GRAFANA_URL} \
+ && tar --strip-components=1 -xzf grafana.tar.gz \
+ && rm grafana.tar.gz \
+ && chown -R grafana:grafana /opt/grafana
+
+# ---------------------------------------------------------
+# Stage 2: Final — distroless runtime
+# ---------------------------------------------------------
+FROM gcr.io/distroless/base-debian12
+
+# Copy Grafana installation and data/log dirs
+COPY --from=builder /opt/grafana    /opt/grafana
+COPY --from=builder /var/lib/grafana /var/lib/grafana
+COPY --from=builder /var/log/grafana /var/log/grafana
+
+# Switch to non-root Grafana user
+USER 472:472
+
+WORKDIR /opt/grafana
+EXPOSE 3000
+
+ENTRYPOINT ["/opt/grafana/bin/grafana-server", \
+  "--homepath=/opt/grafana", \
+  "--config=/opt/grafana/conf/defaults.ini"]

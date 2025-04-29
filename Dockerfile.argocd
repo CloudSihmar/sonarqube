@@ -1,25 +1,54 @@
-# ---------------------------------------------------------
-# Stage 1: Download and extract Argo CD source
-# ---------------------------------------------------------
 FROM alpine:3.18 AS downloader
 
-RUN apk add --no-cache ca-certificates wget tar && \
-    wget -qO /tmp/argocd.tar.gz \
-      https://github.com/argoproj/argo-cd/archive/refs/tags/v3.0.0-rc4.tar.gz && \
-    mkdir -p /out && \
-    tar -xzf /tmp/argocd.tar.gz -C /out
+RUN apk add --no-cache wget tar
 
-# ---------------------------------------------------------
-# Stage 2: Distroless runtime
-# ---------------------------------------------------------
-FROM gcr.io/distroless/static:nonroot
+WORKDIR /src
 
-# Copy binaries from exact locations (hardcoded paths)
-COPY --from=downloader /out/argo-cd-3.0.0-rc4/cmd/argocd /usr/local/bin/argocd
-COPY --from=downloader /out/argo-cd-3.0.0-rc4/cmd/argocd-server /usr/local/bin/argocd-server
-COPY --from=downloader /out/argo-cd-3.0.0-rc4/cmd/argocd-repo-server /usr/local/bin/argocd-repo-server
-COPY --from=downloader /out/argo-cd-3.0.0-rc4/cmd/argocd-application-controller /usr/local/bin/argocd-application-controller
+ARG ARGOCD_VERSION=v3.0.0-rc4
+RUN wget -O argocd.tar.gz https://github.com/argoproj/argo-cd/archive/refs/tags/${ARGOCD_VERSION}.tar.gz && \
+    tar -xzf argocd.tar.gz && \
+    rm argocd.tar.gz
 
-EXPOSE 8080 8081
-USER nonroot:nonroot
-ENTRYPOINT ["/usr/local/bin/argocd-server"]
+# Stage 2: Build UI
+FROM node:18-alpine AS ui-builder
+
+RUN apk add --no-cache git python3 make g++
+
+WORKDIR /ui
+COPY --from=downloader /src/argo-cd-3.0.0-rc4/ui .
+
+RUN yarn install --frozen-lockfile --network-timeout 200000 && \
+    NODE_ENV=production yarn build
+
+# Stage 3: Build Go binaries
+FROM golang:1.24-alpine AS builder
+
+RUN apk add --no-cache git make gcc musl-dev
+
+WORKDIR /go/src/github.com/argoproj/argo-cd
+COPY --from=downloader /src/argo-cd-3.0.0-rc4 .
+COPY --from=ui-builder /ui/dist ./ui/dist
+
+# Build all Argo CD components
+RUN CGO_ENABLED=0 make argocd-all && \
+    mkdir -p /dist && \
+    cp dist/argocd /dist/
+
+# Add symlinks for Argo CD components
+RUN ln -s argocd /dist/argocd-server && \
+    ln -s argocd /dist/argocd-repo-server && \
+    ln -s argocd /dist/argocd-cmp-server && \
+    ln -s argocd /dist/argocd-application-controller && \
+    ln -s argocd /dist/argocd-dex && \
+    ln -s argocd /dist/argocd-notifications && \
+    ln -s argocd /dist/argocd-applicationset-controller && \
+    ln -s argocd /dist/argocd-k8s-auth && \
+    ln -s argocd /dist/argocd-commit-server
+
+# Stage 4: Final image using distroless
+FROM gcr.io/distroless/base-debian12
+
+COPY --from=builder /dist/* /usr/local/bin/
+
+# Optional: change this to the component you want to run by default
+ENTRYPOINT ["/usr/local/bin/argocd"]
